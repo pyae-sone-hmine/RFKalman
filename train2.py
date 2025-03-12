@@ -6,6 +6,7 @@ import csv
 import os
 from stable_baselines3 import PPO
 from kfilter import KalmanFilter
+from ppo_callback import PPOLoggingCallback
 
 class KalmanFilterEnv(gym.Env):
     def __init__(self, csv_file):
@@ -79,6 +80,6 @@ csv_file = "sample_dynamics.csv"  # Path to ground truth CSV
 env = KalmanFilterEnv(csv_file)
 
 model = PPO("MlpPolicy", env,tensorboard_log="./logs2", verbose=1)
-callback = PlotProgressCallback()
-model.learn(total_timesteps=1000000, callback=callback)
+callback = PPOLoggingCallback(log_file="ppo_kalman_logs2.csv")
+model.learn(total_timesteps=2, callback=callback)
 model.save("kalman_rl_model2")
