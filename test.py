@@ -5,8 +5,7 @@ from kfilter import KalmanFilter
 
 #### filepath: /home/gridsan/phmine/rf_kalman/test.py
 def denoise_vehicle_states_with_rl(states_csv):
-    import numpy as np
-    import pandas as pd
+
     states = pd.read_csv(states_csv)
     
     # Get original states (using the same columns as in the classic version)
@@ -252,16 +251,134 @@ def compare_errors_detailed_no_model(df):
 
     return obstacle_noisy_errors, obstacle_filtered_errors, ego_noisy_errors, ego_filtered_errors
 
+
+### FOR V2 ###
+
+def denoise_vehicle_states_with_rl2(states_csv):
+
+    states = pd.read_csv(states_csv)
+    
+    # Get original states (using the same columns as in the classic version)
+    originals_obstacle = states[['Agent2 Ego Dynamics s', 'Agent2 Ego Dynamics d', 
+                                 'Agent2 Ego Dynamics mu', 'Agent2 Ego Dynamics speed', 
+                                 'Agent2 Ego Dynamics steering', 'Agent2 Ego Dynamics kappa']].values
+    originals_ego = states[['Agent1 Ego Dynamics s', 'Agent1 Ego Dynamics d', 
+                            'Agent1 Ego Dynamics mu', 'Agent1 Ego Dynamics speed', 
+                            'Agent1 Ego Dynamics steering', 'Agent1 Ego Dynamics kappa']].values
+    original_df = pd.DataFrame(
+        np.hstack((originals_obstacle, originals_ego)),
+        columns=[
+            'obs_s_original', 'obs_d_original', 'obs_mu_original', 'obs_speed_original', 'obs_steering_original', 'obs_kappa_original',
+            'ego_s_original', 'ego_d_original', 'ego_mu_original', 'ego_speed_original', 'ego_steering_original', 'ego_kappa_original'
+        ]
+    )
+    
+    # Add noise using identical parameters as the classic function
+    noisy_obstacle_states = originals_obstacle + np.random.normal(0, np.abs(originals_obstacle/4), originals_obstacle.shape)
+    noisy_ego_states = originals_ego + np.random.normal(0, np.abs(originals_ego/4), originals_ego.shape)
+    noisy_df = pd.DataFrame(
+        np.hstack((noisy_obstacle_states, noisy_ego_states)),
+        columns=[
+            'obs_s_noisy', 'obs_d_noisy', 'obs_mu_noisy', 'obs_speed_noisy', 'obs_steering_noisy', 'obs_kappa_noisy',
+            'ego_s_noisy', 'ego_d_noisy', 'ego_mu_noisy', 'ego_speed_noisy', 'ego_steering_noisy', 'ego_kappa_noisy'
+        ]
+    )
+    
+    # Prepare to perform filtering with RL dynamic Q/R from model2
+    state_dim = noisy_obstacle_states.shape[1] + noisy_ego_states.shape[1]
+    control_dim = 2  
+    kf = KalmanFilter(dim_x=state_dim, dim_z=state_dim, dim_u=control_dim)
+    
+    filtered_states = []
+    q_diagonals = []  # store the Q diagonal vectors
+    r_diagonals = []  # store the R diagonal vectors
+    
+    # Apply filtering per sample
+    for i in range(len(noisy_obstacle_states)):
+        measurement_vector = np.concatenate((noisy_obstacle_states[i], noisy_ego_states[i]))
+        
+        # Prepare observation for the RL model.
+        # Here, we concatenate the current state estimate and an additional zero element if required.
+        obs = np.concatenate((kf.x.flatten(), np.zeros(1)))
+        
+        # Get the action vector from model2.
+        # The action vector is assumed to have length 2*state_dim.
+        action = model2.predict(obs, deterministic=True)[0]
+        q_diag = action[:state_dim]
+        r_diag = action[state_dim:]
+        
+        # Save the Q and R diagonals for logging/analysis.
+        q_diagonals.append(q_diag.tolist())
+        r_diagonals.append(r_diag.tolist())
+        
+        # Set the Q and R matrices as diagonal matrices based on the predicted values.
+        kf.Q = np.diag(q_diag)
+        kf.R = np.diag(r_diag)
+    
+        # Use control inputs from the CSV.
+        control_vector = np.array([
+            states['Agent1 Ego Dynamics tire velocity (action)'][i],
+            states['Agent1 Ego Dynamics Acceleration (action)'][i]
+        ])
+        kf.predict(u=control_vector)
+        kf.update(measurement_vector)
+        filtered_states.append(kf.x.flatten())
+    
+    filtered_df = pd.DataFrame(
+        filtered_states, 
+        columns=[
+            'obs_s_filtered', 'obs_d_filtered', 'obs_mu_filtered', 'obs_speed_filtered', 'obs_steering_filtered', 'obs_kappa_filtered',
+            'ego_s_filtered', 'ego_d_filtered', 'ego_mu_filtered', 'ego_speed_filtered', 'ego_steering_filtered', 'ego_kappa_filtered'
+        ]
+    )
+    
+    # Optionally, you can add the Q and R diagonal values as new columns.
+    # Here we add them as strings (or you can store them in a different format).
+    filtered_df['Q_diagonal'] = [str(qd) for qd in q_diagonals]
+    filtered_df['R_diagonal'] = [str(rd) for rd in r_diagonals]
+    
+    return pd.concat([original_df, noisy_df, filtered_df], axis=1)
+
+def compare_errors2(states_csv, filtered_states_df):
+    """
+    Compares overall error (Euclidean norm) of the RL-based filtered states
+    and the RL-based noisy measurements with the ground truth.
+    """
+    import numpy as np
+    import pandas as pd
+    states = pd.read_csv(states_csv)
+    ground_truth = states.iloc[:, :12].values  # ground truth from CSV
+
+    # Extract only the '_filtered' and '_noisy' columns from the concatenated DataFrame.
+    filtered = filtered_states_df.filter(like='_filtered').values
+    noisy = filtered_states_df.filter(like='_noisy').values
+    
+    filtered_errors = np.linalg.norm(filtered - ground_truth, axis=1)
+    noisy_errors = np.linalg.norm(noisy - ground_truth, axis=1)
+    
+    print("Average filtered error (RL2):", np.mean(filtered_errors))
+    print("Average noisy error (RL2):", np.mean(noisy_errors))
+    
+    return filtered_errors, noisy_errors
+
 # ----- Execution for RL-based Kalman Filter -----
 model = PPO.load("kalman_rl_model")
-test_csv = "sample_dynamics.csv"
+test_csv = "test_data.csv"
 filtered_states_df = denoise_vehicle_states_with_rl(test_csv)
 filtered_states_df.to_csv('./filtered_vehicle_states_RL.csv', index=False)
 compare_errors(test_csv, filtered_states_df)
 #compare_errors_detailed_rl(test_csv, filtered_states_df)
 
+# ----- Execution for RL-based Kalman Filter -----
+model2 = PPO.load("kalman_rl_model2")
+test_csv = "test_data.csv"
+filtered_states_df = denoise_vehicle_states_with_rl2(test_csv)
+filtered_states_df.to_csv('./filtered_vehicle_states_RL2.csv', index=False)
+compare_errors2(test_csv, filtered_states_df)
+#compare_errors_detailed_rl(test_csv, filtered_states_df)
+
 # ----- Execution for Model-Free (Classic) Kalman Filter -----
-file_path = "sample_dynamics.csv"
+file_path = "test_data.csv"
 data = pd.read_csv(file_path)
 filtered_data = denoise_vehicle_states(data)
 filtered_data.to_csv('./filtered_vehicle_states.csv', index=False)

@@ -93,10 +93,10 @@ class KalmanFilterEnv(gym.Env):
 
         return obs, reward, done, {}
 
-csv_file = "sample_dynamics.csv"  # Path to ground truth CSV
+csv_file = "train_data.csv"  # Path to ground truth CSV
 env = KalmanFilterEnv(csv_file)
 
 model = PPO("MlpPolicy", env,tensorboard_log="./logs", verbose=1)
 callback = PPOLoggingCallback()
-model.learn(total_timesteps=2, callback=callback)
+model.learn(total_timesteps=100000, callback=callback)
 model.save("kalman_rl_model")
